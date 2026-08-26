@@ -289,13 +289,20 @@ reproduced" caveats:
   `worker/src/agentplane_worker/run_spec.py`) - which is safe for the case that actually matters
   (a redelivered message for the *same* run), but a control-plane change to pass an explicit key
   through would remove the reliance on that fallback being correct forever.
-- **No live-cluster validation of `charts/agentplane` or `infra/`.** Neither `helm` nor
-  `terraform` binaries were available in the sandbox this was built in (outbound access is
-  restricted to an allowlist that doesn't include `get.helm.sh` or the Terraform release CDN).
-  What *was* validated: `helm template`'s Go-template braces are balanced and every `.tf` file
-  parses as syntactically valid HCL (`python-hcl2`) - neither is a substitute for `helm lint` /
-  `terraform validate` actually running against the real tool and provider schemas, and both
-  should be run for real before trusting this against a live cluster/subscription.
+- **No live-cluster validation of `charts/agentplane` or `infra/`.** The chart itself *is*
+  validated: `helm lint` passes against `values.yaml`, `values-dev.yaml` and `values-prod.yaml`
+  (0 failed, one advisory about a missing `icon`), and `helm template` renders 21 resources
+  across 13 kinds, including the cert-manager `ClusterIssuer`/`Issuer`/`Certificate` set and 8
+  `NetworkPolicy` objects. (`get.helm.sh` is blocked by this environment's egress proxy, so the
+  binary was built from source through the Go module proxy.)
+
+  What that does *not* prove is that the manifests behave on a real cluster — `helm lint`
+  checks the chart, not the cluster's admission controllers, CRD versions, or whether
+  cert-manager is actually installed. `terraform validate` could not be run at all:
+  `registry.terraform.io` is blocked, so the `azurerm` provider cannot be downloaded and the
+  schemas cannot be checked. `terraform fmt -check` is clean and every `.tf` file parses as
+  valid HCL, which is syntax only. Run both for real before trusting this against a live
+  subscription.
 - **`infra/` has no backup/DR story.** No point-in-time-restore configuration beyond provider
   defaults, single-region only, no cross-region failover for Postgres/Cosmos/Redis - see
   `infra/README.md`'s own "not covered here" section.
