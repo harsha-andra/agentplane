@@ -1,0 +1,25 @@
+# Activated only by the @SpringBootTest context-load smoke test (see
+# AgentplaneApplicationTests). Goal: the full Spring context must come up with NO live Postgres,
+# MongoDB or Redis - so Postgres is swapped for in-memory H2 (Flyway is disabled and Hibernate
+# generates the schema itself), and anything that would proactively talk to Mongo/Redis at
+# startup (index creation, the stream producer/consumer, the Noop job simulator's own writes
+# still work against the H2 datasource so that part is left alone) is switched off.
+spring:
+  datasource:
+    url: jdbc:h2:mem:agentplane-test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+  flyway:
+    enabled: false
+
+agentplane:
+  k8s:
+    enabled: false
+  stream:
+    enabled: false
+  mongo:
+    ensure-indexes-on-startup: false

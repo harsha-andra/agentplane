@@ -1,0 +1,70 @@
+version: "3.9"
+
+# Local dev stack - no Kubernetes required. Bring it up with:
+#   docker compose up --build
+# then browse http://localhost:8080/swagger-ui.html
+#
+# To also populate 5 tenants / ~80 runs on first boot, add the `seed` profile:
+#   SPRING_PROFILES=local,seed docker compose up --build
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agentplane
+      POSTGRES_USER: agentplane
+      POSTGRES_PASSWORD: agentplane
+    ports:
+      - "5432:5432"
+    volumes:
+      - agentplane-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentplane"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - agentplane-mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES:-local}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/agentplane
+      SPRING_DATASOURCE_USERNAME: agentplane
+      SPRING_DATASOURCE_PASSWORD: agentplane
+      SPRING_DATA_MONGODB_URI: mongodb://mongo:27017/agentplane
+      SPRING_DATA_REDIS_HOST: redis
+      AGENTPLANE_K8S_ENABLED: "false"
+
+volumes:
+  agentplane-postgres:
+  agentplane-mongo:

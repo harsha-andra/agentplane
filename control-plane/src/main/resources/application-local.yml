@@ -1,0 +1,14 @@
+# Activate with SPRING_PROFILES_ACTIVE=local (docker-compose.yml already sets this).
+# All connection properties already default to localhost in application.yml - this profile
+# exists mainly to turn logging up and to spell out, explicitly, that no cluster is expected.
+spring:
+  jpa:
+    show-sql: false
+
+agentplane:
+  k8s:
+    enabled: false
+
+logging:
+  level:
+    com.harshaandra.agentplane: DEBUG
