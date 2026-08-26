@@ -1,0 +1,14 @@
+{{- if .Values.controlPlane.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.controlPlane.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "agentplane.controlPlane.selectorLabels" . | nindent 6 }}
+{{- end }}

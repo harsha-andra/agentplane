@@ -1,0 +1,132 @@
+
+# Root dev stack: Postgres, MongoDB, Redis, the control plane, and the console - the whole
+# system, runnable from a clean clone with no Kubernetes cluster (see control-plane's
+# NoopJobLauncher / orchestration.JobLauncher). Bring it up with:
+#
+#   docker compose up --build
+#   # or: make up
+#
+# then:
+#   API / Swagger UI:  http://localhost:8080/swagger-ui.html
+#   Console:            http://localhost:5173
+#
+# To also seed 5 tenants / ~80 runs on first boot:
+#
+#   SPRING_PROFILES=local,seed docker compose up --build
+#   # or: make seed
+#
+# Credentials below are throwaway, local-only defaults (also what control-plane/docker-compose.yml
+# uses) - never used outside this compose network, and never intended to reach a real
+# environment; see infra/ for how real deployments get credentials (Key Vault + workload
+# identity, never a plaintext password in a manifest or compose file).
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agentplane
+      POSTGRES_USER: agentplane
+      POSTGRES_PASSWORD: agentplane # throwaway local credential - see comment above
+    ports:
+      - "5432:5432"
+    volumes:
+      - agentplane-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentplane"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - agentplane-mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  control-plane:
+    build:
+      context: ./control-plane
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      # Every name below matches control-plane/src/main/resources/application.yml exactly -
+      # see control-plane/README.md's "Configuration" table.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES:-local}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/agentplane
+      SPRING_DATASOURCE_USERNAME: agentplane
+      SPRING_DATASOURCE_PASSWORD: agentplane # throwaway local credential - see comment above
+      SPRING_DATA_MONGODB_URI: mongodb://mongo:27017/agentplane
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      # No Kubernetes cluster in this stack - orchestration.NoopJobLauncher simulates run
+      # execution in-process instead of orchestration.Fabric8JobLauncher. This is the default
+      # in application.yml too; set explicitly here so it's never a surprise reading this file.
+      AGENTPLANE_K8S_ENABLED: "false"
+    # HEALTHCHECK is already baked into control-plane/Dockerfile (curl against
+    # /actuator/health); no override needed here, just consuming it via depends_on below.
+
+  console:
+    image: node:20-alpine
+    working_dir: /app
+    # console/ is developed in parallel and intentionally untouched by this change (no
+    # Dockerfile added there) - run it via the vite dev server against a mounted volume
+    # instead of a built image. Fine for local development; a real deployment would build a
+    # static bundle (`npm run build`) and serve `dist/` from a CDN/static host instead.
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
+    volumes:
+      - ./console:/app
+      # Anonymous volume so the container's own node_modules (built for linux/musl) isn't
+      # shadowed by a host-OS node_modules from a previous `npm install` run outside Docker.
+      - /app/node_modules
+    environment:
+      VITE_DEMO_MODE: "false" # hit the real control plane above instead of console's canned demo data
+      VITE_API_BASE: http://localhost:8080/api/v1
+    ports:
+      - "5173:5173"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+
+  # Not started by `docker compose up` - the worker is a Kubernetes Job payload, not a
+  # long-running service, and NoopJobLauncher never launches it in this compose-only stack.
+  # It's included here purely so the worker can be exercised standalone, against nothing but
+  # the env vars it reads (see worker/README.md):
+  #   docker compose --profile worker-demo run --rm worker
+  worker:
+    profiles: ["worker-demo"]
+    build:
+      context: ./worker
+    environment:
+      AGENTPLANE_RUN_ID: compose-demo-run
+      AGENTPLANE_PROMPT: "investigate the tool latency regression"
+      AGENTPLANE_MODEL: demo-model
+      AGENTPLANE_MAX_STEPS: "10"
+      # AGENTPLANE_CONTROL_PLANE_URL / AGENTPLANE_CLIENT_CERT / _KEY / AGENTPLANE_CA_BUNDLE
+      # deliberately left unset: see worker/README.md - the worker logs that it is skipping the
+      # status callback and still exits 0/1 based on its own run outcome.
+
+volumes:
+  agentplane-postgres:
+  agentplane-mongo:

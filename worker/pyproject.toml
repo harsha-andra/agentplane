@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentplane-worker"
+version = "0.1.0"
+description = "AGENTPLANE agent worker - the Kubernetes Job payload launched by Fabric8JobLauncher"
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "requests>=2.31,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9",
+]
+
+[project.scripts]
+agentplane-worker = "agentplane_worker.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: {{ .Values.serviceMonitor.path | quote }}
+    prometheus.io/port: {{ .Values.controlPlane.containerPort | quote }}
+spec:
+  type: {{ .Values.controlPlane.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.controlPlane.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "agentplane.controlPlane.selectorLabels" . | nindent 4 }}

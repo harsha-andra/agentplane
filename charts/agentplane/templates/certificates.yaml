@@ -1,0 +1,122 @@
+{{/*
+mTLS PKI, entirely via cert-manager. Chain: a self-signed ClusterIssuer bootstraps one CA
+Certificate; a namespaced Issuer is then derived FROM that CA (its secretName), and issues
+every leaf certificate below it. This is the standard cert-manager "own your own CA" recipe -
+see https://cert-manager.io/docs/configuration/ca/ - chosen over a public CA because this PKI
+only needs to be trusted by this cluster's own workloads (the control plane and the workers it
+launches), never by an external browser or client.
+
+SANs and usages matter here, per the mTLS claim this backs (see docs/RUNBOOK.md §4 and
+docs/adr/0004-mtls-between-control-plane-and-workers.md):
+  - the control plane's certificate needs `usages: [server auth]` (it is the TLS *server* in
+    this relationship) and its DNS SANs must include the in-cluster Service DNS name workers
+    will actually connect to - a mismatch here is exactly the "PKIX path building failed"
+    class of error the runbook walks through, just for hostname verification instead of trust.
+  - the worker's certificate needs `usages: [client auth]` (it authenticates itself as a
+    *client*) and does not need a DNS SAN at all - only a distinguishing commonName, since
+    nothing dials it back by hostname.
+*/}}
+{{- if .Values.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ .Values.certManager.clusterIssuerName }}
+  labels:
+    {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.certManager.ca.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  isCA: true
+  commonName: {{ .Values.certManager.ca.name }}
+  secretName: {{ .Values.certManager.ca.secretName }}
+  duration: {{ .Values.certManager.ca.duration }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: {{ .Values.certManager.clusterIssuerName }}
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ .Values.certManager.issuer.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ .Values.certManager.ca.secretName }}
+---
+# Server certificate - control plane's mTLS listener. "server auth" only: this certificate
+# proves the control plane's identity to a connecting worker, it never authenticates the
+# control plane as a client of anything else.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.certManager.controlPlaneCert.secretName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.certManager.controlPlaneCert.secretName }}
+  duration: {{ .Values.certManager.controlPlaneCert.duration }}
+  renewBefore: {{ .Values.certManager.controlPlaneCert.renewBefore }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  commonName: {{ include "agentplane.controlPlane.serviceDnsName" . }}
+  dnsNames:
+    - {{ include "agentplane.controlPlane.fullname" . }}
+    - {{ printf "%s.%s" (include "agentplane.controlPlane.fullname" .) .Release.Namespace }}
+    - {{ printf "%s.%s.svc" (include "agentplane.controlPlane.fullname" .) .Release.Namespace }}
+    - {{ include "agentplane.controlPlane.serviceDnsName" . }}
+    {{- with .Values.certManager.controlPlaneCert.extraDnsNames }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment
+  issuerRef:
+    name: {{ .Values.certManager.issuer.name }}
+    kind: Issuer
+    group: cert-manager.io
+---
+# Client certificate - what every worker Job pod presents. "client auth" only, and deliberately
+# no dnsNames: nothing ever dials a worker by this identity, it only authenticates outbound
+# connections FROM the worker TO the control plane.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.certManager.workerClientCert.secretName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  secretName: {{ .Values.certManager.workerClientCert.secretName }}
+  duration: {{ .Values.certManager.workerClientCert.duration }}
+  renewBefore: {{ .Values.certManager.workerClientCert.renewBefore }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  commonName: {{ .Values.certManager.workerClientCert.commonName }}
+  usages:
+    - client auth
+    - digital signature
+    - key encipherment
+  issuerRef:
+    name: {{ .Values.certManager.issuer.name }}
+    kind: Issuer
+    group: cert-manager.io
+{{- end }}

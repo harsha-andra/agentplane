@@ -1,0 +1,31 @@
+AGENTPLANE control plane deployed as "{{ include "agentplane.controlPlane.fullname" . }}" in namespace "{{ .Release.Namespace }}".
+
+{{- if .Values.controlPlane.ingress.enabled }}
+
+API base:      http{{ if .Values.controlPlane.ingress.tls.enabled }}s{{ end }}://{{ .Values.controlPlane.ingress.host }}{{ .Values.controlPlane.ingress.path }}
+Swagger UI:    http{{ if .Values.controlPlane.ingress.tls.enabled }}s{{ end }}://{{ .Values.controlPlane.ingress.host }}/swagger-ui.html
+{{- else }}
+
+No Ingress enabled - port-forward to reach the control plane:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "agentplane.controlPlane.fullname" . }} 8080:{{ .Values.controlPlane.service.port }}
+{{- end }}
+
+Check rollout status:
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "agentplane.controlPlane.fullname" . }}
+
+Check the three probes are wired the way docs/RUNBOOK.md §6 expects:
+  kubectl -n {{ .Release.Namespace }} get deployment {{ include "agentplane.controlPlane.fullname" . }} -o jsonpath='{.spec.template.spec.containers[0].livenessProbe}{"\n"}{.spec.template.spec.containers[0].readinessProbe}{"\n"}{.spec.template.spec.containers[0].startupProbe}'
+
+{{- if .Values.certManager.enabled }}
+
+Check the mTLS PKI came up (cert-manager):
+  kubectl -n {{ .Release.Namespace }} get certificate,issuer,clusterissuer
+{{- end }}
+
+{{- if .Values.networkPolicy.enabled }}
+
+NetworkPolicy is on (default-deny + explicit allows) - if a pod cannot reach Postgres/Mongo/
+Redis/the Kubernetes API after this install, check networkPolicy.postgres/mongo/redis/
+kubernetesApi.cidr in your values file actually match this cluster's real network layout
+(values.yaml ships permissive placeholders, not real values for any specific cluster).
+{{- end }}

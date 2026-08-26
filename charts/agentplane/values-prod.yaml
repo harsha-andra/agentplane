@@ -1,0 +1,100 @@
+# Prod overlay - see infra/ for the Terraform this pairs with (AKS + workload identity,
+# managed Postgres/Redis/Cosmos Mongo, Key Vault, ACR).
+#
+#   helm upgrade --install agentplane charts/agentplane -f charts/agentplane/values.yaml -f charts/agentplane/values-prod.yaml
+
+controlPlane:
+  image:
+    repository: agentplane.azurecr.io/agentplane/control-plane  # set to the real ACR login server
+    tag: "REPLACE_WITH_RELEASED_TAG"  # pinned explicitly by CD (see .github/workflows/cd.yml) - never `latest` in prod
+    pullPolicy: IfNotPresent
+
+  replicaCount: 3
+
+  env:
+    SPRING_PROFILES_ACTIVE: "prod"
+    AGENTPLANE_K8S_ENABLED: "true"
+
+  # Real datastore credentials come from Azure Key Vault via the CSI Secret Store driver,
+  # bound to this pod through the same federated workload identity infra/ sets up - not from a
+  # Kubernetes Secret containing a plaintext password checked in anywhere. Populate this list per
+  # environment; left as an illustrative example rather than shipped with a working reference,
+  # since the actual Key Vault name/secret names are infra-specific:
+  # secretEnv:
+  #   - name: SPRING_DATASOURCE_PASSWORD
+  #     secretName: agentplane-keyvault-secrets   # a SecretProviderClass-synced K8s Secret
+  #     secretKey: postgres-password
+  secretEnv: []
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 768Mi
+    limits:
+      cpu: "2"
+      # 1Gi limit -> 768MiB heap at MaxRAMPercentage=75, following the same 75/25 split the
+      # Dockerfile bakes in and RUNBOOK.md §2 measures - not a fixed -Xmx, so this scales
+      # automatically with whatever this value is changed to.
+      memory: 1Gi
+
+  ingress:
+    enabled: true
+    host: agentplane.example.com  # replace with the real prod hostname
+    tls:
+      enabled: true
+      secretName: agentplane-control-plane-tls
+
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 65
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+  serviceAccount:
+    annotations:
+      # AKS workload identity - matches the federated identity credential infra/main.tf creates
+      # for this namespace+ServiceAccount pair. Replace with the real client id Terraform
+      # outputs (`terraform output control_plane_workload_identity_client_id`).
+      azure.workload.identity/client-id: "REPLACE_WITH_TERRAFORM_OUTPUT"
+    labels:
+      azure.workload.identity/use: "true"
+
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: agentplane
+                app.kubernetes.io/component: control-plane
+            topologyKey: kubernetes.io/hostname
+
+serviceMonitor:
+  enabled: true
+
+networkPolicy:
+  enabled: true
+  # Fill these in with the real values for the target AKS cluster/VNet before applying to
+  # prod - the chart's defaults (values.yaml) are deliberately permissive placeholders, not
+  # something to run unmodified in a real environment.
+  # postgres:
+  #   cidr: "10.42.0.0/24"     # the Flexible Server's private-endpoint subnet
+  # mongo:
+  #   cidr: "10.42.1.0/24"     # the Cosmos DB private-endpoint subnet
+  # redis:
+  #   cidr: "10.42.2.0/24"     # the Azure Cache for Redis private-endpoint subnet
+  # kubernetesApi:
+  #   cidr: "10.42.255.0/24"   # the AKS API server's private CIDR (az aks show ... --query apiServerAccessProfile)
+
+certManager:
+  controlPlaneCert:
+    duration: 2160h   # 90 days
+    renewBefore: 720h # 30 days - wide renewal window for a cert that backs mTLS every pod needs
+
+rbac:
+  create: true

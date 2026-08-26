@@ -1,0 +1,5 @@
+# Runtime dependencies only (mirrors pyproject.toml's [project.dependencies]).
+# Kept alongside pyproject.toml because some image-scanning/SBOM tooling (and
+# a couple of the CI steps in .github/workflows/ci.yml) expect a plain
+# requirements file rather than parsing pyproject.toml.
+requests>=2.31,<3

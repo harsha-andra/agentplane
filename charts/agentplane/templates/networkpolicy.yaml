@@ -1,0 +1,192 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/*
+Default-deny, then explicit allows. A NetworkPolicy with an empty podSelector matches every pod
+in the namespace; listing Ingress/Egress in policyTypes with no `ingress`/`egress` rules block
+means "deny everything of that type" - this is the walled-garden baseline every allow rule below
+punches one specific hole through.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentplane.fullname" . }}-default-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# DNS - every other egress rule below depends on this one running first (Service/hostname
+# resolution has to work before anything can even attempt to connect to Postgres/Mongo/Redis/
+# the K8s API). CoreDNS listens on both UDP and TCP 53; TCP matters for answers too large for
+# a single UDP datagram.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}-allow-dns
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentplane.controlPlane.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              {{ .Values.networkPolicy.dns.namespaceLabel.key }}: {{ .Values.networkPolicy.dns.namespaceLabel.value }}
+      ports:
+        - protocol: UDP
+          port: {{ .Values.networkPolicy.dns.port }}
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.dns.port }}
+---
+# Postgres - domain.* (Tenant/AgentRun/AuditEvent). See docs/adr/0002-polyglot-persistence.md.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}-allow-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentplane.controlPlane.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.postgres.cidr }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.postgres.port }}
+---
+# MongoDB - trace.RunTrace, the high-volume/schema-varying half of persistence.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}-allow-mongo
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentplane.controlPlane.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.mongo.cidr }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.mongo.port }}
+---
+# Redis - the run queue (stream.*) and the idempotency guard (IdempotencyGuard's SETNX).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}-allow-redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentplane.controlPlane.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.redis.cidr }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.redis.port }}
+---
+# Kubernetes API server - Fabric8JobLauncher/PodStatusWatcher's only network dependency besides
+# the datastores above. See values.yaml's networkPolicy.kubernetesApi comment for why this has
+# to be a CIDR rather than a selector.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}-allow-k8s-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentplane.controlPlane.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.kubernetesApi.cidr }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.kubernetesApi.port }}
+---
+# Ingress controller -> control plane. Restricts inbound traffic on the API port to just the
+# ingress-nginx namespace, rather than leaving it open to every pod in the cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}-allow-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentplane.controlPlane.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{ .Values.networkPolicy.ingressControllerNamespaceLabel.key }}: {{ .Values.networkPolicy.ingressControllerNamespaceLabel.value }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.controlPlane.containerPort }}
+{{- if .Values.networkPolicy.controlPlaneToWorker.enabled }}
+---
+# Control plane -> worker pods (any tenant namespace, matched by label rather than namespace
+# name since tenant namespaces are dynamic). Provisioned as least-privilege scaffolding for a
+# possible future direct callback/cancellation path - NOT exercised by the current code, which
+# cancels a run by deleting its Job through the K8s API, never by dialing the worker pod's
+# network directly. See docs/ARCHITECTURE.md, "known limitations".
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}-allow-egress-worker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentplane.controlPlane.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              {{ .Values.networkPolicy.controlPlaneToWorker.workerPodLabel.key }}: {{ .Values.networkPolicy.controlPlaneToWorker.workerPodLabel.value }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.controlPlaneToWorker.port }}
+{{- end }}
+{{- end }}

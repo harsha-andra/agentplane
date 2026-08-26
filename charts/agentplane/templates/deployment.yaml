@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controlPlane.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "agentplane.controlPlane.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentplane.controlPlane.labels" . | nindent 8 }}
+      {{- with .Values.controlPlane.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "agentplane.serviceAccountName" . }}
+      {{- if .Values.controlPlane.dnsConfig.enabled }}
+      # RUNBOOK.md §5: ndots:2 instead of the Kubernetes default of 5, on the condition
+      # (documented in values.yaml) that every hostname this app is configured with is already
+      # fully qualified - see values.yaml's controlPlane.dnsConfig comment for the trade-off.
+      dnsConfig:
+        options:
+          - name: ndots
+            value: {{ .Values.controlPlane.dnsConfig.ndots | quote }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+      containers:
+        - name: control-plane
+          image: "{{ .Values.controlPlane.image.repository }}:{{ .Values.controlPlane.image.tag }}"
+          imagePullPolicy: {{ .Values.controlPlane.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # the JVM needs to write to a small tmp scratch area
+            runAsNonRoot: true
+          ports:
+            - name: http
+              containerPort: {{ .Values.controlPlane.containerPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentplane.controlPlane.fullname" . }}
+          env:
+            {{- range $key, $value := .Values.controlPlane.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range .Values.controlPlane.secretEnv }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+            {{- range .Values.controlPlane.extraEnv }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.controlPlane.resources | nindent 12 }}
+          # See RUNBOOK.md §6 for exactly why these three probes are wired the way they are;
+          # values.yaml's controlPlane.probes comments carry the same reasoning next to each field.
+          startupProbe:
+            httpGet:
+              path: {{ .Values.controlPlane.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.controlPlane.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.controlPlane.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.controlPlane.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.controlPlane.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.controlPlane.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.controlPlane.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.controlPlane.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.controlPlane.probes.readiness.failureThreshold }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.certManager.enabled }}
+            - name: control-plane-tls
+              mountPath: /etc/agentplane/tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.certManager.enabled }}
+        # Populated by cert-manager (see templates/certificates.yaml) with tls.crt/tls.key
+        # (this service's own server certificate, "server auth" EKU) and ca.crt (the shared
+        # in-cluster CA, auto-added by cert-manager for certs issued by a CA Issuer).
+        #
+        # NOT wired to server.ssl.* here: control-plane/src (out of scope for this change) has
+        # no HTTPS/mTLS listener configured today - it serves plain HTTP, and that is exactly
+        # what the startup/liveness/readiness probes and the Ingress backend above assume.
+        # Flipping Spring Boot to an HTTPS-only connector via env vars alone, without matching
+        # code (and without re-validating the probes/ingress against it), would be exactly the
+        # kind of untested, silently-broken change this repo does not ship. This volume mount
+        # exists so the certificate material is present, rotated, and ready in the pod for
+        # that follow-up - see docs/ARCHITECTURE.md, "known limitations".
+        - name: control-plane-tls
+          secret:
+            secretName: {{ .Values.certManager.controlPlaneCert.secretName }}
+        {{- end }}
+      {{- with .Values.controlPlane.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controlPlane.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controlPlane.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

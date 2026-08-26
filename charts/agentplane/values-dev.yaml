@@ -1,0 +1,56 @@
+# Dev overlay - a single small cluster (e.g. kind/minikube/an AKS dev cluster), optimized for
+# "helm upgrade --install" iterating quickly, not for resilience.
+#
+#   helm upgrade --install agentplane charts/agentplane -f charts/agentplane/values.yaml -f charts/agentplane/values-dev.yaml
+
+controlPlane:
+  image:
+    tag: "dev"
+    pullPolicy: Always
+
+  replicaCount: 1
+
+  env:
+    SPRING_PROFILES_ACTIVE: "local,seed"
+    # A dev cluster here is assumed to have no real Kubernetes-launching workload yet, or to be
+    # deliberately testing Fabric8JobLauncher end to end - flip to "false" to run the chart's
+    # control plane against NoopJobLauncher instead, exactly like docker-compose does.
+    AGENTPLANE_K8S_ENABLED: "true"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 384Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  ingress:
+    enabled: true
+    host: agentplane.dev.local
+    tls:
+      enabled: false  # cert-manager's self-signed CA is fine for the internal mTLS path in
+                       # dev, but a browser hitting the ingress host will complain about it -
+                       # simplest for local iteration is plain HTTP on the ingress itself.
+
+  hpa:
+    enabled: false  # one replica in dev; nothing to scale
+
+  podDisruptionBudget:
+    enabled: false  # meaningless (and actively annoying for `kubectl drain`) at replicaCount: 1
+
+serviceMonitor:
+  enabled: false  # skip unless a Prometheus Operator is actually installed in the dev cluster
+
+networkPolicy:
+  # Disabled by default in dev: a single-cluster dev setup routinely has Postgres/Mongo/Redis
+  # running as plain in-cluster Deployments with pod IPs that churn on every restart, and
+  # iterating on which CIDR/label to allow is friction with no security benefit in a
+  # disposable cluster. Turn it back on (with real values for the CIDR/label fields in
+  # values.yaml) to test the actual policies before they hit values-prod.yaml.
+  enabled: false
+
+certManager:
+  controlPlaneCert:
+    duration: 720h  # 30 days - shorter-lived certs are fine (and safer to get wrong) in dev
+    renewBefore: 240h

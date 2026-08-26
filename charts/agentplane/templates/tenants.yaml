@@ -1,0 +1,122 @@
+{{/*
+Per-tenant Namespace + ResourceQuota + LimitRange, one block per entry in .Values.tenants.
+
+Naming and labels deliberately match orchestration.Fabric8JobLauncher.provisionTenantNamespace
+exactly (quota named "<slug>-quota", limits named "<slug>-limits", label
+"agentplane.io/tenant-slug") - see that class. In normal operation the control plane provisions
+these itself, dynamically, the moment a tenant is created via POST /api/v1/tenants; this
+template exists for statically pre-provisioning known tenants (e.g. via GitOps, or before the
+control plane's first deploy) without the two paths ever disagreeing on what a "tenant
+namespace" looks like. Values.tenants is empty by default - nothing here renders until an
+environment's values file actually lists tenants.
+*/}}
+{{- range .Values.tenants }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .namespace }}
+  labels:
+    {{- include "agentplane.labels" $ | nindent 4 }}
+    agentplane.io/tenant-slug: {{ .slug }}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ .slug }}-quota
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "agentplane.labels" $ | nindent 4 }}
+    agentplane.io/tenant-slug: {{ .slug }}
+spec:
+  hard:
+    requests.cpu: {{ .quotaCpu | quote }}
+    requests.memory: {{ .quotaMemory | quote }}
+    limits.cpu: {{ .quotaCpu | quote }}
+    limits.memory: {{ .quotaMemory | quote }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ .slug }}-limits
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "agentplane.labels" $ | nindent 4 }}
+    agentplane.io/tenant-slug: {{ .slug }}
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: {{ .limitDefaultCpu | quote }}
+        memory: {{ .limitDefaultMemory | quote }}
+      defaultRequest:
+        cpu: {{ .limitDefaultRequestCpu | quote }}
+        memory: {{ .limitDefaultRequestMemory | quote }}
+{{- if $.Values.networkPolicy.enabled }}
+---
+{{/*
+Defense in depth inside the tenant's own namespace: default-deny, then the one egress path a
+worker Job actually uses - reporting its status back to the control plane over mTLS (see
+worker/src/agentplane_worker/control_plane_client.py). Workers never talk to Postgres/Mongo/
+Redis/the K8s API directly - only the control plane does - so this namespace needs none of
+those allows.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "agentplane.labels" $ | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "agentplane.labels" $ | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              {{ $.Values.networkPolicy.dns.namespaceLabel.key }}: {{ $.Values.networkPolicy.dns.namespaceLabel.value }}
+      ports:
+        - protocol: UDP
+          port: {{ $.Values.networkPolicy.dns.port }}
+        - protocol: TCP
+          port: {{ $.Values.networkPolicy.dns.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-control-plane
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "agentplane.labels" $ | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "agentplane.controlPlane.selectorLabels" $ | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.controlPlane.containerPort }}
+{{- end }}
+---
+{{- end }}

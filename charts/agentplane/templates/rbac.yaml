@@ -1,0 +1,63 @@
+{{/*
+Least-privilege RBAC for the control plane's ServiceAccount. Every verb below is commented with
+the exact orchestration.* call in control-plane/src that needs it - nothing is granted "just in
+case".
+
+Why ClusterRole and not a namespaced Role: Namespaces, ResourceQuotas, Jobs and Pods for a
+*tenant's* workload live in a namespace the control plane itself creates at runtime
+(TenantProvisioningService -> Fabric8JobLauncher.provisionTenantNamespace), on tenant creation.
+Kubernetes RBAC cannot express "the namespaces you are about to create" - a Role is scoped to a
+namespace that must already exist. So the practical minimum for this architecture is a
+ClusterRole for the namespaced verbs (Jobs/Pods/ResourceQuotas/LimitRanges), bound once, rather
+than a namespaced Role re-applied by CI after every tenant onboarding. This is a real trade-off,
+not a false economy - it is called out plainly in docs/ARCHITECTURE.md's "known limitations",
+together with what it does NOT grant: no verb on Secrets, ConfigMaps, RBAC objects, or any
+resource this ServiceAccount does not itself touch in code.
+*/}}
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+rules:
+  # Namespace, ResourceQuota, LimitRange: Fabric8JobLauncher.provisionTenantNamespace() calls
+  # client.resource(...).createOrReplace() for all three - which is a get followed by a create
+  # or update, hence both verbs on each. "delete" is intentionally NOT granted: this app never
+  # tears down a tenant namespace itself.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "update"]
+  - apiGroups: [""]
+    resources: ["resourcequotas", "limitranges"]
+    verbs: ["get", "list", "watch", "create", "update"]
+  # Jobs: launchJob() calls .create(); cancelJob() calls .withName(...).delete(). "get"/"list"/
+  # "watch" are included for basic observability (kubectl get jobs, and so a future health check
+  # or reconciliation loop does not need an RBAC change to add a read) - this app's own code
+  # today never lists Jobs back.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Pods: getPodStatus() calls .inNamespace(...).withLabel(...).list() - read-only, and it is
+  # the *only* Pod access this app has. No create/delete/exec on Pods directly - Pods are only
+  # ever managed indirectly, through their owning Job.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "agentplane.controlPlane.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agentplane.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

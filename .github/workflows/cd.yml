@@ -1,0 +1,155 @@
+name: CD
+
+# Deploys per environment via OIDC federation to Azure - NOT a stored client secret. The
+# `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` values below are IDENTIFIERS,
+# not credentials: they name which Azure AD App Registration and subscription to act as. That
+# App Registration has a Federated Identity Credential configured (same mechanism as
+# infra/identity.tf's azurerm_federated_identity_credential for the AKS workload identity, just
+# federated to GitHub's OIDC issuer instead of AKS's) trusting THIS repository/environment's
+# GitHub Actions OIDC token as proof of identity - no `AZURE_CLIENT_SECRET` (or any other
+# long-lived key) exists in this repository's secrets at all. See
+# docs/adr/0005-joblauncher-abstraction.md's neighbours in docs/adr/ and
+# docs/ARCHITECTURE.md for the same "no secret in any manifest" principle applied here to CI/CD
+# credentials rather than pod credentials.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy
+        type: choice
+        options: [dev, staging, prod]
+        default: dev
+      image_tag:
+        description: Image tag to deploy (defaults to the current commit SHA)
+        type: string
+        required: false
+  push:
+    branches: [main] # continuous deploy to dev on every merge
+    tags: ["v*"] # deploy to prod only on an explicit release tag
+
+permissions:
+  id-token: write # required for OIDC - this is the token azure/login exchanges, nothing else
+  contents: read
+
+concurrency:
+  group: cd-${{ github.event.inputs.environment || (startsWith(github.ref, 'refs/tags/') && 'prod') || 'dev' }}
+  cancel-in-progress: false # never cancel a deploy already in flight
+
+jobs:
+  resolve-environment:
+    name: Resolve target environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+      image_tag: ${{ steps.resolve.outputs.image_tag }}
+    steps:
+      - id: resolve
+        run: |
+          if [ -n "${{ github.event.inputs.environment }}" ]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
+            echo "environment=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
+          fi
+          echo "image_tag=${{ github.event.inputs.image_tag || github.sha }}" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    name: Build + push images to ACR
+    needs: resolve-environment
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-environment.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC - no client secret)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: az acr build (control plane)
+        run: |
+          az acr build \
+            --registry "${{ vars.ACR_NAME }}" \
+            --image "agentplane/control-plane:${{ needs.resolve-environment.outputs.image_tag }}" \
+            control-plane
+
+      - name: az acr build (worker)
+        run: |
+          az acr build \
+            --registry "${{ vars.ACR_NAME }}" \
+            --image "agentplane/worker:${{ needs.resolve-environment.outputs.image_tag }}" \
+            worker
+
+  deploy:
+    name: Deploy via Helm
+    needs: [resolve-environment, build-and-push]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-environment.outputs.environment }}
+    env:
+      ENVIRONMENT: ${{ needs.resolve-environment.outputs.environment }}
+      IMAGE_TAG: ${{ needs.resolve-environment.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC - no client secret)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: az aks get-credentials
+        run: |
+          az aks get-credentials \
+            --resource-group "${{ vars.AKS_RESOURCE_GROUP }}" \
+            --name "${{ vars.AKS_CLUSTER_NAME }}" \
+            --overwrite-existing
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: "v3.15.4"
+
+      - name: helm upgrade --install
+        run: |
+          helm upgrade --install agentplane charts/agentplane \
+            --namespace agentplane --create-namespace \
+            -f charts/agentplane/values.yaml \
+            -f "charts/agentplane/values-${ENVIRONMENT}.yaml" \
+            --set controlPlane.image.repository="$(az acr show --name "${{ vars.ACR_NAME }}" --query loginServer -o tsv)/agentplane/control-plane" \
+            --set controlPlane.image.tag="$IMAGE_TAG" \
+            --wait --timeout 5m
+
+      - name: Record the revision that just went live
+        if: success()
+        run: helm history agentplane -n agentplane --max 5
+
+  # If `deploy` fails partway (e.g. the new pods never become healthy inside --wait's timeout),
+  # `helm upgrade` itself already leaves the release at its previous, working revision by default
+  # ONLY if --atomic is set - it is NOT set above, deliberately: --atomic's automatic rollback
+  # hides *why* a deploy failed by the time anyone looks, whereas this job's `helm history`
+  # step above gives an operator the failing revision to inspect first. Roll back explicitly,
+  # after looking:
+  #
+  #   helm rollback agentplane <previous-revision-number> -n agentplane
+  #   # or, to the immediately preceding revision without knowing its number:
+  #   helm rollback agentplane -n agentplane
+  #
+  # This is intentionally a documented manual step, not automated in this workflow - an
+  # unattended auto-rollback on ANY failure (including a failure unrelated to the new release,
+  # e.g. a flaky readiness probe during an unrelated cluster event) can mask a real problem
+  # behind "it's fine now, it rolled back". A human decides to roll back a specific, understood
+  # failure.
+  rollback-instructions:
+    name: Rollback instructions (manual step - not automatic)
+    needs: [resolve-environment, deploy]
+    if: failure() && needs.deploy.result == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error::Deploy to ${{ needs.resolve-environment.outputs.environment }} failed. To roll back:"
+          echo "::error::  az aks get-credentials --resource-group <rg> --name <cluster>"
+          echo "::error::  helm history agentplane -n agentplane"
+          echo "::error::  helm rollback agentplane <previous-revision-number> -n agentplane"

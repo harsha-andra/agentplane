@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentplane.controlPlane.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentplane.controlPlane.labels" . | nindent 4 }}
+data:
+  # Names match control-plane/src/main/resources/application.yml exactly - see that file and
+  # control-plane/README.md's "Configuration" table. Credentials are deliberately not in here;
+  # see controlPlane.secretEnv in values.yaml / deployment.yaml.
+  SPRING_DATASOURCE_URL: {{ .Values.datastores.postgres.url | quote }}
+  SPRING_DATASOURCE_USERNAME: {{ .Values.datastores.postgres.username | quote }}
+  SPRING_DATA_MONGODB_URI: {{ .Values.datastores.mongo.uri | quote }}
+  SPRING_DATA_REDIS_HOST: {{ .Values.datastores.redis.host | quote }}
+  SPRING_DATA_REDIS_PORT: {{ .Values.datastores.redis.port | quote }}

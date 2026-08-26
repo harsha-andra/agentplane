@@ -1,0 +1,234 @@
+# Default values for the agentplane chart. See values-dev.yaml / values-prod.yaml for the
+# environment-specific overrides layered on top of this file
+# (helm upgrade --install agentplane charts/agentplane -f values.yaml -f values-<env>.yaml).
+
+nameOverride: ""
+fullnameOverride: ""
+
+controlPlane:
+  image:
+    repository: agentplane/control-plane
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 2
+
+  containerPort: 8080
+
+  # Matches control-plane/src/main/resources/application.yml exactly - see that file and
+  # control-plane/README.md's "Configuration" table for what each of these does.
+  env:
+    SPRING_PROFILES_ACTIVE: "prod"
+    AGENTPLANE_K8S_ENABLED: "true"
+  # Values that must come from a Secret rather than plain env vars (datasource/mongo/redis
+  # credentials, etc.) - a list of {name, secretName, secretKey}, rendered as envFrom/valueFrom
+  # in deployment.yaml. Left empty here deliberately: which Secret holds these depends on how
+  # the datastores were provisioned (see infra/ for the Terraform side, which writes connection
+  # secrets to Key Vault, not to a Kubernetes Secret with a literal password in it).
+  secretEnv: []
+  # Extra plain env vars (list of {name, value}), for anything not covered above.
+  extraEnv: []
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      # 512Mi is the exact figure control-plane/Dockerfile and docs/RUNBOOK.md §2 walk through:
+      # -XX:MaxRAMPercentage=75 against a 512Mi cgroup limit gives a 384MiB heap, leaving 128MiB
+      # for metaspace/thread stacks/direct buffers/native memory. Raise this for a
+      # traffic/workload profile that needs a bigger heap, but keep MaxRAMPercentage=75 (baked
+      # into the image's JAVA_TOOL_OPTIONS) rather than pinning a fixed -Xmx here.
+      memory: 512Mi
+
+  # Startup/liveness/readiness all target actuator endpoints - see docs/RUNBOOK.md §6, which
+  # this configuration follows exactly (including the failureThreshold values).
+  probes:
+    startup:
+      # 30 * 5s = 150s budget for JVM boot + Flyway migration before liveness starts being
+      # evaluated at all. A slow-starting pod under this budget is never mistaken for a hang.
+      path: /actuator/health/liveness
+      periodSeconds: 5
+      failureThreshold: 30
+    liveness:
+      # Deliberately liveness, never readiness/health (which includes datasource/Mongo/Redis
+      # indicators) - see RUNBOOK §6, "the configuration mistake that turns this into an
+      # outage": if liveness depended on the database, a brief DB hiccup would fail liveness on
+      # every pod at once and Kubernetes would restart the entire fleet simultaneously, turning
+      # a recoverable blip into a self-inflicted restart storm. Liveness must only ask
+      # "is this process wedged?", never "are my dependencies healthy?".
+      path: /actuator/health/liveness
+      periodSeconds: 10
+      failureThreshold: 6
+    readiness:
+      # This DOES include the datasource/Mongo/Redis health indicators (Spring Boot's default
+      # readiness group) - correctly so: a pod whose dependencies are down should be pulled out
+      # of the Service's endpoints quickly, without being killed.
+      path: /actuator/health/readiness
+      periodSeconds: 5
+      failureThreshold: 2
+
+  service:
+    type: ClusterIP
+    port: 80
+
+  ingress:
+    enabled: true
+    className: nginx
+    host: agentplane.example.com
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+      # SSE (GET /api/v1/runs/{id}/events) needs buffering off, or the ingress will hold back
+      # events waiting to fill a buffer instead of streaming them as they're written.
+      nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    tls:
+      enabled: true
+      secretName: agentplane-control-plane-tls
+    path: /
+
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  serviceAccount:
+    create: true
+    name: ""
+    # Populate via values-prod.yaml with the AKS workload-identity annotations
+    # (azure.workload.identity/client-id) - see infra/ for the federated identity credential
+    # this pairs with, and README.md/ARCHITECTURE.md for "no secret in any manifest".
+    annotations: {}
+    labels: {}
+
+  # RUNBOOK.md §5: ndots:5 (the Kubernetes default) makes every external hostname with fewer
+  # than 5 dots try the cluster's search domains first, costing 3 failed DNS lookups before the
+  # real one succeeds. ndots:2 fixes that, but breaks single-label in-cluster lookups (a bare
+  # "redis" has 0 dots and still needs the search list) - safe here only because this chart's
+  # own config always uses fully-qualified service names (e.g. postgres.<ns>.svc.cluster.local,
+  # or the fully-qualified external hostname of a managed database), never a bare short name.
+  dnsConfig:
+    enabled: true
+    ndots: "2"
+
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /actuator/prometheus
+  labels: {}
+
+networkPolicy:
+  enabled: true
+  # Label used to identify the ingress-nginx controller's namespace, for the
+  # ingress-to-control-plane allow rule.
+  ingressControllerNamespaceLabel:
+    key: kubernetes.io/metadata.name
+    value: ingress-nginx
+  dns:
+    namespaceLabel:
+      key: kubernetes.io/metadata.name
+      value: kube-system
+    port: 53
+  postgres:
+    # Managed Postgres (Azure Database for PostgreSQL Flexible Server, see infra/) sits outside
+    # the cluster's pod network, so this is expressed as a CIDR, not a podSelector. Fill in the
+    # real private-endpoint /32 (or the delegated subnet CIDR) per environment - values-prod.yaml
+    # does NOT ship a real one here on purpose, since it is infrastructure-specific.
+    cidr: "10.0.0.0/16"
+    port: 5432
+  mongo:
+    # Cosmos DB (Mongo API) likewise - see infra/cosmos.tf.
+    cidr: "10.0.0.0/16"
+    port: 10255
+  redis:
+    # Azure Cache for Redis, TLS port.
+    cidr: "10.0.0.0/16"
+    port: 6380
+  kubernetesApi:
+    # NetworkPolicy has no portable, selector-based way to reach a managed control plane's API
+    # server (on AKS it is not a pod in the cluster's own pod network at all) - this has to be a
+    # CIDR. 0.0.0.0/0 restricted to :443 is the honest default for "works out of the box against
+    # an unknown cluster"; scope this down to the API server's actual private IP/CIDR for the
+    # target cluster in a values override.
+    cidr: "0.0.0.0/0"
+    port: 443
+  # Control-plane -> worker-pod egress. Provisioned as least-privilege scaffolding for a
+  # possible future direct callback/cancellation path; NOT exercised by the current code, which
+  # cancels a run by deleting its Kubernetes Job through the K8s API (Fabric8JobLauncher),
+  # never by talking to the worker pod's network directly. Documented as such rather than
+  # implied to be load-bearing - see docs/ARCHITECTURE.md "known limitations".
+  controlPlaneToWorker:
+    enabled: true
+    workerPodLabel:
+      key: agentplane.io/role
+      value: worker
+    port: 9443
+
+rbac:
+  create: true
+
+certManager:
+  enabled: true
+  clusterIssuerName: agentplane-selfsigned-issuer
+  ca:
+    name: agentplane-ca
+    secretName: agentplane-ca-secret
+    duration: 8760h  # 1 year
+  issuer:
+    name: agentplane-ca-issuer
+  controlPlaneCert:
+    secretName: agentplane-control-plane-tls
+    duration: 2160h  # 90 days
+    renewBefore: 360h  # 15 days
+    # Additional to the Service's own cluster-local DNS name (computed in _helpers.tpl) - add
+    # the public ingress hostname here too if the ingress terminates TLS with this same cert
+    # rather than a separate public-CA one.
+    extraDnsNames: []
+  workerClientCert:
+    secretName: agentplane-worker-client-tls
+    commonName: agentplane-worker
+    duration: 2160h  # 90 days
+    renewBefore: 360h  # 15 days
+
+# Non-secret datastore connection info, rendered into a ConfigMap and wired into the control
+# plane's env as exactly the variable names control-plane/src/main/resources/application.yml
+# reads (SPRING_DATASOURCE_URL, SPRING_DATA_MONGODB_URI, SPRING_DATA_REDIS_HOST/_PORT).
+# Credentials are deliberately NOT here - see controlPlane.secretEnv above.
+datastores:
+  postgres:
+    url: "jdbc:postgresql://postgres.example.com:5432/agentplane"
+    username: "agentplane"
+  mongo:
+    uri: "mongodb://mongo.example.com:27017/agentplane"
+  redis:
+    host: "redis.example.com"
+    port: "6379"
+
+# Per-tenant Namespace + ResourceQuota + LimitRange. In normal operation these are provisioned
+# dynamically by TenantProvisioningService / Fabric8JobLauncher.provisionTenantNamespace when a
+# tenant is created via POST /api/v1/tenants - this list is for statically pre-provisioning known
+# tenants (e.g. via GitOps, before the control plane's own first run) with the *same* naming and
+# labels the control plane itself would use, so the two paths never disagree. Namespace naming
+# ("tenant-<slug>") deliberately matches TenantProvisioningService.createTenant exactly - see
+# that class. Empty by default.
+tenants: []
+# tenants:
+#   - slug: acme
+#     namespace: tenant-acme
+#     quotaCpu: "4"
+#     quotaMemory: "8Gi"
+#     limitDefaultCpu: "500m"
+#     limitDefaultMemory: "512Mi"
+#     limitDefaultRequestCpu: "100m"
+#     limitDefaultRequestMemory: "128Mi"

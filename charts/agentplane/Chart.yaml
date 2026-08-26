@@ -1,0 +1,23 @@
+apiVersion: v2
+name: agentplane
+description: >-
+  AGENTPLANE control plane - a Kubernetes control plane for LLM agent workloads.
+  Deploys the control-plane Deployment/Service/Ingress/HPA, cert-manager-issued
+  mTLS material for the control plane <-> worker relationship, default-deny
+  NetworkPolicy plus explicit allows, per-tenant Namespace/ResourceQuota/LimitRange,
+  and the RBAC the control plane needs to launch Kubernetes Jobs on tenants' behalf.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/harsha-andra/agentplane
+sources:
+  - https://github.com/harsha-andra/agentplane
+keywords:
+  - agentplane
+  - llm
+  - agents
+  - kubernetes
+  - control-plane
+maintainers:
+  - name: harsha.andra111
+    email: harsha.andra111@gmail.com
