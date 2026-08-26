@@ -155,21 +155,33 @@ jobs:
       - name: Build worker image
         run: docker build -t agentplane-worker:ci worker
 
+      # Runs Trivy's own published image rather than the marketplace action.
+      # aquasecurity/trivy-action@0.24.0 does not resolve, and pinning a
+      # marketplace action to a tag that may be retagged or removed is a standing
+      # source of red builds. The image tag is pinned deliberately.
       - name: Trivy - control-plane
-        uses: aquasecurity/trivy-action@0.24.0
-        with:
-          image-ref: agentplane-control-plane:ci
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${HOME}/.cache/trivy:/root/.cache/trivy" \
+            aquasec/trivy:0.74.0 image \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              --ignore-unfixed \
+              --no-progress \
+              agentplane-control-plane:ci
 
       - name: Trivy - worker
-        uses: aquasecurity/trivy-action@0.24.0
-        with:
-          image-ref: agentplane-worker:ci
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${HOME}/.cache/trivy:/root/.cache/trivy" \
+            aquasec/trivy:0.74.0 image \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              --ignore-unfixed \
+              --no-progress \
+              agentplane-worker:ci
 
   # --- Stage 6: helm lint ---------------------------------------------------------------------
   helm-lint:

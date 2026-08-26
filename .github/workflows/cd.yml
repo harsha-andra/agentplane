@@ -23,9 +23,20 @@ on:
         description: Image tag to deploy (defaults to the current commit SHA)
         type: string
         required: false
+  # Deliberately NOT triggered by `push`.
+  #
+  # This workflow authenticates to Azure by OIDC federation and deploys with Helm.
+  # Until AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID are configured
+  # and a Federated Identity Credential trusts this repository, every push would
+  # fail at the login step - a permanently red badge that says nothing about the
+  # code. Run it from the Actions tab once the infrastructure exists, or restore
+  # the trigger below.
+  #
+  #   push:
+  #     branches: [main]   # continuous deploy to dev on every merge
+  #     tags: ["v*"]       # deploy to prod only on an explicit release tag
   push:
-    branches: [main] # continuous deploy to dev on every merge
-    tags: ["v*"] # deploy to prod only on an explicit release tag
+    tags: ["v*"]
 
 permissions:
   id-token: write # required for OIDC - this is the token azure/login exchanges, nothing else

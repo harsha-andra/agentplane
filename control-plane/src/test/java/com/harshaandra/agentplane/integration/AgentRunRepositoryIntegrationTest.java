@@ -19,11 +19,10 @@ import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Exercises the real Postgres schema (Flyway migration + Hibernate ddl-auto=validate) via
@@ -33,17 +32,44 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Tag("integration")
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Testcontainers
 class AgentRunRepositoryIntegrationTest {
 
-    @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+    /**
+     * A container by default - that is what CI runs. If AGENTPLANE_TEST_JDBC_URL is set, that
+     * database is used instead, so these tests can also be run on a machine where the container
+     * runtime is unavailable or image pulls are blocked.
+     *
+     * The lifecycle is managed here rather than by @Testcontainers/@Container so the container is
+     * only created when it is actually going to be used.
+     */
+    private static PostgreSQLContainer<?> postgres;
 
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
+        String externalUrl = System.getenv("AGENTPLANE_TEST_JDBC_URL");
+
+        if (externalUrl != null && !externalUrl.isBlank()) {
+            registry.add("spring.datasource.url", () -> externalUrl);
+            registry.add("spring.datasource.username",
+                    () -> envOrDefault("AGENTPLANE_TEST_DB_USER", "agentplane"));
+            registry.add("spring.datasource.password",
+                    () -> envOrDefault("AGENTPLANE_TEST_DB_PASSWORD", "agentplane"));
+            return;
+        }
+
+        if (postgres == null) {
+            postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+            postgres.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(postgres::stop));
+        }
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
+    }
+
+    private static String envOrDefault(String key, String fallback) {
+        String value = System.getenv(key);
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     @Autowired
@@ -52,6 +78,8 @@ class AgentRunRepositoryIntegrationTest {
     private AgentRunRepository agentRunRepository;
     @Autowired
     private EntityManager entityManager;
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     private Tenant newTenant(String slug) {
         return tenantRepository.save(new Tenant(slug, slug, "tenant-" + slug, "4", "8Gi", 5));
@@ -105,21 +133,40 @@ class AgentRunRepositoryIntegrationTest {
         assertThat(byText.getTotalElements()).isGreaterThanOrEqualTo(2);
     }
 
+    /**
+     * Proves the guarantee that matters: the UPDATE Hibernate issues carries the version in its
+     * WHERE clause, so a write based on a stale read matches zero rows and is rejected rather
+     * than silently overwriting whatever landed in between.
+     *
+     * The competing write is issued with plain JDBC, behind Hibernate's back, because loading
+     * the same row twice does NOT give you two independent copies. A persistence context holds
+     * exactly one instance per identifier, so a second findById returns the same object and a
+     * later merge of a detached copy is applied *onto that instance* - the two "copies" are one,
+     * and no conflict is possible. The first version of this test did exactly that and asserted
+     * an exception that could never be thrown.
+     */
     @Test
     void optimisticLockingRejectsAConcurrentStaleUpdate() {
         Tenant tenant = newTenant("umbrella");
         AgentRun saved = agentRunRepository.saveAndFlush(newRun(tenant, "opt-lock"));
         entityManager.clear();
 
-        AgentRun copyA = agentRunRepository.findById(saved.getId()).orElseThrow();
-        entityManager.clear();
-        AgentRun copyB = agentRunRepository.findById(saved.getId()).orElseThrow();
+        AgentRun ours = agentRunRepository.findById(saved.getId()).orElseThrow();
+        long versionWeRead = ours.getVersion();
 
-        copyA.applyStatus(RunStatus.SCHEDULED);
-        agentRunRepository.saveAndFlush(copyA);
+        // Someone else commits a change to this row while we hold our copy.
+        int rowsUpdated = jdbcTemplate.update(
+                "UPDATE agent_runs SET version = version + 1 WHERE id = ?", saved.getId());
+        assertThat(rowsUpdated).isEqualTo(1);
 
-        copyB.applyStatus(RunStatus.CANCELLED);
-        assertThatThrownBy(() -> agentRunRepository.saveAndFlush(copyB))
+        // Our write now targets a version that no longer exists:
+        //   UPDATE agent_runs SET ... WHERE id = ? AND version = <versionWeRead>
+        // matches nothing, and Hibernate turns "zero rows updated" into a lock failure rather
+        // than a silent no-op.
+        ours.applyStatus(RunStatus.CANCELLED);
+        assertThatThrownBy(() -> agentRunRepository.saveAndFlush(ours))
                 .isInstanceOf(OptimisticLockingFailureException.class);
+
+        assertThat(versionWeRead).isZero();
     }
 }
