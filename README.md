@@ -104,8 +104,7 @@ configuration table (every env var, matched exactly by `docker-compose.yml` and
   (`XCLAIM`/`XAUTOCLAIM`) picks it back up after a visibility timeout, and a Redis `SETNX`-backed
   idempotency guard is what makes that reclaim safe instead of a duplicate `Job` launch. See
   `docs/ARCHITECTURE.md` §3 and RUNBOOK §8 (a real captured `XPENDING`/`XINFO GROUPS` session).
-- **mTLS, both directions.** The worker's client (`worker/src/agentplane_worker/
-  control_plane_client.py`) presents a client certificate and verifies the control plane's
+- **mTLS, both directions.** The worker's client (`worker/src/agentplane_worker/  control_plane_client.py`) presents a client certificate and verifies the control plane's
   certificate against a CA bundle, tested against a real local HTTPS server requiring a client
   cert (not a mock) - success path and both failure directions. `charts/agentplane` issues the
   full cert-manager PKI behind it. See `docs/ARCHITECTURE.md` §5 for exactly what's wired end to
