@@ -18,10 +18,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Profile;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -64,8 +66,26 @@ public class SeedDataRunner implements CommandLineRunner {
     private final TraceRepository traceRepository;
     private final JdbcTemplate jdbcTemplate;
 
+    /** Latches once Mongo has failed, so the seed does not pay the driver timeout per run. */
+    private final AtomicBoolean mongoUnavailable = new AtomicBoolean(false);
+
+    /**
+     * Deliberately NOT {@code @Transactional}.
+     *
+     * <p>Seeding writes to two stores. Wrapping both in one transaction looks tidy and is a trap:
+     * {@code SimpleMongoRepository.save} is itself annotated {@code @Transactional}, so with only
+     * a JPA transaction manager present the Mongo write <em>joins the Postgres transaction</em>.
+     * When Mongo is unreachable the write fails, the interceptor marks that transaction
+     * rollback-only, and every relational row seeded so far is discarded at commit — even though
+     * the exception was caught and handled here. The symptom is the worst kind: a clean log, a
+     * successful startup, and an empty database.
+     *
+     * <p>The deeper point is that a Mongo write cannot participate in a Postgres transaction in
+     * any meaningful sense — it cannot be rolled back with it. Pretending otherwise buys nothing
+     * and costs the relational data. Each repository call is therefore its own transaction, and
+     * trace seeding is free to fail on its own.
+     */
     @Override
-    @Transactional
     public void run(String... args) {
         if (tenantRepository.count() > 0) {
             log.info("Seed data already present ({} tenants) - skipping", tenantRepository.count());
@@ -146,7 +166,25 @@ public class SeedDataRunner implements CommandLineRunner {
                     "status PENDING -> " + status + " (seed)"));
         }
 
-        seedTraces(run.getId(), startedAt != null ? startedAt : createdAt, status);
+        // Traces live in MongoDB; everything above is relational. The Postgres side is what makes
+        // the console usable — traces enrich it. If Mongo is unreachable, say so once and carry
+        // on: a demo-data loader must never be the reason the application refuses to start.
+        //
+        // The flag short-circuits the *attempt*, not just the logging. The Mongo driver's server
+        // selection timeout is 30s, so retrying once per run would turn an 80-run seed into a
+        // 40-minute startup — technically working, practically indistinguishable from a hang.
+        if (mongoUnavailable.get()) {
+            return;
+        }
+        try {
+            seedTraces(run.getId(), startedAt != null ? startedAt : createdAt, status);
+        } catch (DataAccessException e) {
+            mongoUnavailable.set(true);
+            log.warn("Skipping trace seeding — MongoDB is not reachable ({}). Tenants, runs and "
+                            + "the audit trail are still seeded; trace views and the tool-latency "
+                            + "aggregation stay empty until Mongo is available.",
+                    e.getMostSpecificCause().getMessage());
+        }
     }
 
     private void seedTraces(UUID runId, Instant baseTime, RunStatus status) {
