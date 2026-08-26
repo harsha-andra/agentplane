@@ -1,0 +1,38 @@
+.badge {
+  border: 1px solid transparent;
+}
+
+.pending {
+  color: var(--status-pending);
+  background: var(--status-pending-bg);
+}
+
+.scheduled {
+  color: var(--status-scheduled);
+  background: var(--status-scheduled-bg);
+}
+
+.running {
+  color: var(--status-running);
+  background: var(--status-running-bg);
+}
+
+.succeeded {
+  color: var(--status-succeeded);
+  background: var(--status-succeeded-bg);
+}
+
+.failed {
+  color: var(--status-failed);
+  background: var(--status-failed-bg);
+}
+
+.cancelled {
+  color: var(--status-cancelled);
+  background: var(--status-cancelled-bg);
+}
+
+.timed-out {
+  color: var(--status-timed-out);
+  background: var(--status-timed-out-bg);
+}

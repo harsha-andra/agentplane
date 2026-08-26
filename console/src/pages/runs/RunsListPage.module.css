@@ -1,0 +1,25 @@
+.filters {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.searchField {
+  flex: 1;
+  min-width: 200px;
+  max-width: 320px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.idCell {
+  min-width: 150px;
+}
+
+.jobCell {
+  min-width: 170px;
+}

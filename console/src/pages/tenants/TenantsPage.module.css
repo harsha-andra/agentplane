@@ -1,0 +1,57 @@
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-4);
+}
+
+.card {
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.cardHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.name {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+}
+
+.slug {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.icon {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft-bg);
+  color: var(--accent-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.quotaRow {
+  display: flex;
+  gap: var(--space-5);
+  font-size: var(--text-xs);
+}
+
+.quotaLabel {
+  color: var(--text-tertiary);
+  display: block;
+  margin-bottom: 2px;
+}
+
+.quotaValue {
+  font-weight: var(--weight-medium);
+}

@@ -1,0 +1,95 @@
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+.step {
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--space-3) 0;
+}
+
+.step:last-child {
+  border-bottom: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.seq {
+  color: var(--text-disabled);
+  width: 20px;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.typeIcon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+}
+
+.typeIconError {
+  color: var(--status-failed);
+  background: var(--status-failed-bg);
+}
+
+.name {
+  min-width: 0;
+  flex: 1;
+}
+
+.nameTitle {
+  font-weight: var(--weight-medium);
+  font-size: var(--text-sm);
+}
+
+.nameSub {
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+
+.latencyWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 160px;
+  flex-shrink: 0;
+}
+
+.latencyBarTrack {
+  flex: 1;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+
+.latencyBarFill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+
+.latencyBarFillError {
+  background: var(--status-failed);
+}
+
+.latencyValue {
+  width: 56px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.payload {
+  margin-top: var(--space-2);
+  margin-left: 56px;
+}

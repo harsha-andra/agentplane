@@ -1,0 +1,32 @@
+.json-view {
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-xs);
+  line-height: 1.65;
+  overflow: auto;
+  max-height: 460px;
+  margin: 0;
+  white-space: pre;
+}
+
+.json-key {
+  color: var(--text-secondary);
+}
+
+.json-string {
+  color: var(--positive);
+}
+
+.json-number {
+  color: var(--accent-strong);
+}
+
+.json-bool {
+  color: var(--warning);
+}
+
+.json-null {
+  color: var(--text-disabled);
+}

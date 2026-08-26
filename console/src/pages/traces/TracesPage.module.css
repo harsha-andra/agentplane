@@ -1,0 +1,23 @@
+.filters {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.searchField {
+  flex: 1;
+  min-width: 180px;
+  max-width: 280px;
+}
+
+.chartCard {
+  margin-bottom: var(--space-4);
+}
+
+.sortBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
