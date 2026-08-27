@@ -12,8 +12,31 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src src
 RUN pip install --no-cache-dir --no-deps .
 
+# Strip the packaging tools out of the venv once the app is installed.
+#
+# pip / setuptools / wheel (and setuptools' vendored jaraco.context) are build-time only — the
+# worker imports nothing from them at runtime, it needs the app package and `requests`. They
+# were also the entire Python-package finding set in the image scan: wheel (CVE-2026-24049,
+# arbitrary code execution via a malicious wheel) and jaraco.context (CVE-2026-23949, tar path
+# traversal), among others. Removing them clears those findings and shrinks the attack surface
+# to exactly what runs. Verified: the worker still imports and runs with all three gone.
+RUN pip uninstall -y wheel setuptools pip \
+    && rm -rf /opt/venv/lib/python*/site-packages/jaraco* \
+              /opt/venv/lib/python*/site-packages/pkg_resources \
+              /opt/venv/lib/python*/site-packages/_distutils_hack \
+              /opt/venv/lib/python*/site-packages/setuptools* \
+              /opt/venv/lib/python*/site-packages/wheel*
+
 # --- Runtime stage -------------------------------------------------------------------------
 FROM python:3.11-slim
+
+# Patch the base image's OS packages before anything else. The python:3.11-slim tag is rebuilt
+# on its own cadence and can lag the Debian security repo, which is how a fixable OS-package CVE
+# reaches the image scan even though a fix is published. Upgrading here ships the patched
+# packages at build time. (The control-plane image does the equivalent apt-get upgrade.)
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
 
 # Run as a non-root user - this is a Kubernetes Job payload, never a reason to run as root,
 # and the mTLS client material it reads (AGENTPLANE_CLIENT_CERT/_KEY) should not be readable
