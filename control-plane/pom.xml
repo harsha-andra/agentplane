@@ -31,6 +31,10 @@
              patched driver keeps a future database refresh from turning the build red. Fixed in
              42.7.12; 42.7.13 is the current patch. -->
         <postgresql.version>42.7.13</postgresql.version>
+        <!-- Override Spring Boot's managed Netty (4.1.135.Final, pulled via Lettuce/Redis) to
+             clear CVE-2026-59901 - an infinite loop in netty-codec's bzip2 decoder. Fixed in
+             4.1.136.Final; 4.1.137.Final is the current patch. -->
+        <netty.version>4.1.137.Final</netty.version>
     </properties>
 
     <dependencies>
@@ -76,11 +80,30 @@
             <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
 
-        <!-- Kubernetes -->
+        <!-- Kubernetes.
+             The default kubernetes-client bundles the OkHttp HTTP transport, which drags in
+             okhttp 3.12.12 - flagged HIGH by the image scan (CVE-2021-0341, information
+             disclosure). Rather than force a risky okhttp 3->4 bump under fabric8, swap the
+             transport for fabric8's JDK client, which uses the java.net.http.HttpClient built
+             into JDK 21. That removes okhttp from the tree entirely and drops a third-party
+             HTTP stack in favour of the platform's own. The NoopJobLauncher path (local, no
+             cluster) does not touch it; the Fabric8JobLauncher uses it against a real cluster. -->
         <dependency>
             <groupId>io.fabric8</groupId>
             <artifactId>kubernetes-client</artifactId>
             <version>${kubernetes-client.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.fabric8</groupId>
+                    <artifactId>kubernetes-httpclient-okhttp</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>io.fabric8</groupId>
+            <artifactId>kubernetes-httpclient-jdk</artifactId>
+            <version>${kubernetes-client.version}</version>
+            <scope>runtime</scope>
         </dependency>
 
         <!-- OpenAPI -->
