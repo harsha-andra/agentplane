@@ -38,6 +38,20 @@ RUN apt-get update \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
+# Remove the SYSTEM Python's packaging tools too. python:3.11-slim ships pip/setuptools/wheel in
+# /usr/local — and setuptools bundles vendored copies of wheel 0.45.1 (CVE-2026-24049) and
+# jaraco.context 5.3.0 (CVE-2026-23949) under its _vendor/ directory, which the image scan reads
+# from their dist-info METADATA. The app never runs from the system interpreter — it runs from
+# the /opt/venv copied below, and that venv is built with include-system-site-packages=false, so
+# it cannot see these anyway. Removing them clears the findings without affecting the app.
+RUN rm -rf /usr/local/lib/python3.11/site-packages/setuptools* \
+           /usr/local/lib/python3.11/site-packages/pkg_resources \
+           /usr/local/lib/python3.11/site-packages/_distutils_hack \
+           /usr/local/lib/python3.11/site-packages/wheel* \
+           /usr/local/lib/python3.11/site-packages/pip* \
+           /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.11 \
+    && find /usr/local/lib/python3.11/site-packages -maxdepth 1 -name 'jaraco*' -exec rm -rf {} +
+
 # Run as a non-root user - this is a Kubernetes Job payload, never a reason to run as root,
 # and the mTLS client material it reads (AGENTPLANE_CLIENT_CERT/_KEY) should not be readable
 # by anything other than this user either (mount them 0440, owned by this uid, in the chart).
