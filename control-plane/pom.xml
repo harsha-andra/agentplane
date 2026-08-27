@@ -25,6 +25,12 @@
         <springdoc.version>2.8.9</springdoc.version>
         <testcontainers.version>1.20.3</testcontainers.version>
         <maven.compiler.parameters>true</maven.compiler.parameters>
+        <!-- Override Spring Boot's managed Postgres driver (42.7.11) to pick up the fix for
+             CVE-2026-54291 (SCRAM-SHA-256-PLUS downgrade MITM). The scan does not flag this yet
+             only because Trivy's CVE database had not picked it up at scan time; pinning the
+             patched driver keeps a future database refresh from turning the build red. Fixed in
+             42.7.12; 42.7.13 is the current patch. -->
+        <postgresql.version>42.7.13</postgresql.version>
     </properties>
 
     <dependencies>
